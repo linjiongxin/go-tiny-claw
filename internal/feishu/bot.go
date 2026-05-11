@@ -8,11 +8,14 @@ import (
 	"os"
 	"strings"
 
+	"net/http"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/linjiongxin/go-tiny-claw/internal/engine"
-
-	lark "github.com/larksuite/oapi-sdk-go/v3"
+	"github.com/linjiongxin/go-tiny-claw/internal/platform"
 )
 
 // FeishuBot 封装了飞书机器人的配置与核心业务流
@@ -142,3 +145,24 @@ func (r *FeishuReporter) OnMessage(ctx context.Context, content string) {
 
 // 编译时类型检查：确保 FeishuReporter 实现了 Reporter 接口
 var _ engine.Reporter = (*FeishuReporter)(nil)
+
+// =================== 平台注册 ===================
+
+func init() {
+	platform.Register(&feishuAdapter{})
+}
+
+type feishuAdapter struct{}
+
+func (a *feishuAdapter) Name() string { return "feishu" }
+
+func (a *feishuAdapter) Enabled() bool {
+	return os.Getenv("FEISHU_APP_ID") != "" && os.Getenv("FEISHU_APP_SECRET") != ""
+}
+
+func (a *feishuAdapter) Launch(ctx context.Context, mux *http.ServeMux, eng *engine.AgentEngine) error {
+	bot := NewFeishuBot(eng)
+	handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
+	mux.HandleFunc("/webhook/"+a.Name(), handler)
+	return nil
+}
