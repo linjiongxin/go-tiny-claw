@@ -18,7 +18,7 @@ import (
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 )
 
-// DingTalkBot 封装了钉钉 Stream 模式机器人的配置与业务流
+// DingTalkBot 封装了钉钉 Stream 模式机器人的配置与核心业务流
 type DingTalkBot struct {
 	appKey    string
 	appSecret string
@@ -50,36 +50,43 @@ func (b *DingTalkBot) Start(ctx context.Context) error {
 	return cli.Start(ctx)
 }
 
+// onChatBotMessage 处理来自钉钉的机器人消息。
+// 和飞书的 EventDispatcher 回调职责一致：提取内容、异步派发、立即返回 ACK。
 func (b *DingTalkBot) onChatBotMessage(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
 	content := strings.TrimSpace(data.Text.Content)
 	if content == "" {
 		return []byte("ok"), nil
 	}
 
-	// 立即 ack，让用户知道已收到
-	ack := &DingTalkReporter{webhook: data.SessionWebhook}
-	ack.sendMsg("🤖 收到请求，开始处理...")
-
-	reporter := &DingTalkReporter{
-		webhook:   data.SessionWebhook,
-		tokenMgr:  b.tokenMgr,
-		robotCode: b.appKey,
-		userID:    data.SenderStaffId,
-	}
-
-	// 异步执行 Agent，不阻塞 Stream ACK
-	go b.handleAgentRun(content, reporter)
+	// 【驾驭并发】：收到消息后，绝不能阻塞 Stream ACK。
+	// 我们要为每个请求开启一个独立的 Goroutine 跑 Agent 任务！
+	go b.handleAgentRun(data.SessionWebhook, data.SenderStaffId, content)
 
 	return []byte("ok"), nil
 }
 
-func (b *DingTalkBot) handleAgentRun(prompt string, reporter *DingTalkReporter) {
+// handleAgentRun 是连接钉钉与底层引擎的桥梁。
+// 参照飞书的 handleAgentRun：内部实例化 Reporter，启动引擎，错误兜底。
+func (b *DingTalkBot) handleAgentRun(sessionWebhook, userID, prompt string) {
+	reporter := &DingTalkReporter{
+		webhook:   sessionWebhook,
+		tokenMgr:  b.tokenMgr,
+		robotCode: b.appKey,
+		userID:    userID,
+	}
+
+	// 先 ack，让用户知道任务已收到
+	reporter.sendMsg("🤖 收到请求，开始处理...")
+
+	// 启动引擎！
 	if err := b.engine.Run(context.Background(), prompt, reporter); err != nil {
-		reporter.sendMsg(fmt.Sprintf("❌ Agent 运行失败: %v", err))
+		reporter.sendMsg(fmt.Sprintf("❌ Agent 运行崩溃: %v", err))
 	}
 }
 
-// =================== Reporter 实现 ===================
+// ==========================================
+// DingTalkReporter: 将引擎的输出格式化后发给钉钉
+// ==========================================
 
 // DingTalkReporter 通过 sessionWebhook 或 accessToken 向用户推送消息
 type DingTalkReporter struct {
@@ -89,8 +96,9 @@ type DingTalkReporter struct {
 	userID    string              // 兜底通道：接收者用户ID
 }
 
+// sendMsg 封装了消息发送，优先用 sessionWebhook，失效时 fallback 到单聊 API。
+// 和飞书的 sendMsg 职责一致，只是钉钉需要处理双通道。
 func (r *DingTalkReporter) sendMsg(text string) {
-	// 钉钉消息长度限制，截断保护
 	const maxLen = 4000
 	display := text
 	if len(display) > maxLen {
@@ -110,7 +118,6 @@ func (r *DingTalkReporter) sendMsg(text string) {
 	}
 }
 
-// sendViaWebhook 通过钉钉群会话的 sessionWebhook 发 markdown 消息
 func (r *DingTalkReporter) sendViaWebhook(text string) error {
 	payload := map[string]interface{}{
 		"msgtype": "markdown",
@@ -133,7 +140,6 @@ func (r *DingTalkReporter) sendViaWebhook(text string) error {
 	return nil
 }
 
-// sendViaPrivateChat 通过钉钉开放平台 API 给用户发单聊机器人消息
 func (r *DingTalkReporter) sendViaPrivateChat(text string) error {
 	token, err := r.tokenMgr.GetToken()
 	if err != nil {
