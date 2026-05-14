@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	ctxpkg "github.com/linjiongxin/go-tiny-claw/internal/context"
 	"github.com/linjiongxin/go-tiny-claw/internal/provider"
 	"github.com/linjiongxin/go-tiny-claw/internal/schema"
 	"github.com/linjiongxin/go-tiny-claw/internal/tools"
@@ -16,6 +17,7 @@ type AgentEngine struct {
 	registry       tools.Registry
 	WorkDir        string
 	EnableThinking bool
+	composer       *ctxpkg.PromptComposer
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
@@ -24,14 +26,18 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		registry:       r,
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
+		composer:       ctxpkg.NewPromptComposer(workDir),
 	}
 }
 
 func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
 	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
 
+	// 动态组装 System Prompt，彻底替换掉以前硬编码的面条提示词！
+	systemMsg := e.composer.Build()
+
 	contextHistory := []schema.Message{
-		{Role: schema.RoleSystem, Content: "You are go-tiny-claw, an expert coding assistant."},
+		systemMsg, // 注入动态组装的内核、AGENTS.md 与 Skills
 		{Role: schema.RoleUser, Content: userPrompt},
 	}
 
